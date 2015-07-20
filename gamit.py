@@ -37,7 +37,10 @@ class Gamit:
         self.credentials = credentials
 
         # Check if storage folder exists
-        data_path = os.path.expanduser("~") + '/gamitdata'
+        if args.base is None:
+            data_path = os.path.expanduser("~") + '/gamitdata'
+        else:
+            data_path = args.base + '/gamitdata'
         if not os.path.isdir(data_path):
             os.mkdir(data_path)
             print "Data directory ~/gamitdata initialized"
@@ -170,21 +173,28 @@ Body:
             existing_labels.append(label['name'])
 
         mail_path = "%s/%s/mail" % (self.data_path, args.src)
-        if os.path.exists(mail_path + '/labels.json'):
-            f = open(mail_path+ '/labels.json', 'r')
-            labels = json.load(f)
+        f = open(mail_path+ '/labels.json', 'r')
+        labels = json.load(f)
+        for label in labels['labels']:
+            if label['type'] == 'system':
+                continue
+            if label['name'] in existing_labels:
+                continue
+            label_obj = {
+                'messageListVisibility': label.get('messageListVisibility', 'show'),
+                'name': label['name'],
+                'labelListVisibility': label.get('labelListVisibility', 'labelShow')
+            }
+            print "Creating label with name: %s" % label['name']
+            service.users().labels().create(userId=self.user_email, body=label_obj).execute()
+
+        # Map old label IDs to their new label IDs
+        label_map = {}
+        new_labels = service.users().labels().list(userId=self.user_email).execute()
+        for new_label in new_labels['labels']:
             for label in labels['labels']:
-                if label['type'] == 'system':
-                    continue
-                if label['name'] in existing_labels:
-                    continue
-                label_obj = {
-                    'messageListVisibility': label.get('messageListVisibility', 'show'),
-                    'name': label['name'],
-                    'labelListVisibility': label.get('labelListVisibility', 'labelShow')
-                }
-                print "Creating label with name: %s" % label['name']
-                service.users().labels().create(userId=self.user_email, body=label_obj).execute()
+                if label['name'] == new_label['name']:
+                    label_map[label['id']] = new_label['id']
 
         # Restore emails
         mail_dir = "%s/%s/mail" % (self.data_path, args.src)
@@ -200,8 +210,20 @@ Body:
                 continue
             data = json.load(open("%s/%s" % (mail_dir, msg_file)))
 
+            # Skip chat messages
+            if 'CHAT' in data['labelIds']:
+                num_restored += 1
+                continue
+
+            label_ids = []
+            for lbl in data['labelIds']:
+                if label_map.get(lbl) is None:
+                    print "Label with ID %s cannot be matched to new account" % lbl
+                    continue
+                label_ids.append(label_map[lbl])
+
             email_obj = {
-                'labelIds': data.get('labelIds', [])
+                'labelIds': label_ids
             }
 
             def http_callback(resp, content):
@@ -221,6 +243,7 @@ Body:
                                        ), method='POST', body=multi_part_body,
                                                        headers={'Content-Type': 'multipart/related; boundary="gamit_multipart_bound"'}).execute()
             except googleapiclient.http.HttpError, e:
+                print data.get('labelIds')
                 error = json.loads(e.content)['error']
                 if error.get('code') == 400:
                     for err in error.get('errors', []):
@@ -288,6 +311,7 @@ if __name__ == "__main__":
                                                                                     'mail_export_to_files',
                                                                                     'download_drive', 'restore_email'])
     parser.add_argument('-u', '--user', help="Email address of user", required=True)
+    parser.add_argument('-b', '--base', help='Path of base folder to store gamitdata')
     parser.add_argument('-a', '--admin', help='Domain administrator user')
     parser.add_argument('-d', '--domain', help='Domain name')
     parser.add_argument('-f', '--forward', help='Email address to forward to')
