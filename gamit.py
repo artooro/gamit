@@ -15,6 +15,7 @@ import datetime
 import unicodedata
 import re
 import codecs
+import time
 
 
 KEY_FILE = "%s/oauthkey.json" % os.path.dirname(os.path.realpath(__file__))
@@ -284,19 +285,33 @@ Body:
                           callback=save_message)
             batch.execute(http=self.http_auth)
 
-        response = service.users().messages().list(userId=self.user_email).execute()
-        if 'messages' in response:
-            current_count = current_count + len(response['messages'])
-            print "Downloading %s/%s messages" %(current_count, total_messages)
-            download_messages(response['messages'])
+        while True:
+            page_token = None
 
-        while 'nextPageToken' in response:
-            page_token = response['nextPageToken']
-            response = service.users().messages().list(userId=self.user_email, pageToken=page_token).execute()
-            current_count = current_count + len(response['messages'])
-            print "Downloading %s/%s messages" %(current_count, total_messages)
-            download_messages(response['messages'])
+            try:
+                if page_token is None:
+                    response = service.users().messages().list(userId=self.user_email).execute()
+                else:
+                    response = service.users().messages().list(userId=self.user_email, pageToken=page_token).execute()
 
+                current_count = current_count + len(response['messages'])
+                print "Downloading %s/%s messages" %(current_count, total_messages)
+                while True:
+                    try:
+                        download_messages(response['messages'])
+                        break
+                    except:
+                        print "Failure to download, re-trying in 1 second"
+                        time.sleep(1)
+
+                if 'nextPageToken' in response:
+                    page_token = response['nextPageToken']
+                else:
+                    break
+            except:
+                print "There was an error, re-trying in 1 second"
+                time.sleep(1)
+                pass
 
 def safe_filename(filename):
     value = unicodedata.normalize('NFKD', filename).encode('ascii', 'ignore')
