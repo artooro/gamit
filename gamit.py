@@ -5,6 +5,7 @@ import argparse
 from httplib2 import Http
 from googleapiclient import discovery
 from googleapiclient.http import BatchHttpRequest
+import googleapiclient
 import gdata
 import gdata.apps.emailsettings.client
 import gdata.gauth
@@ -155,6 +156,81 @@ Body:
         auth2token.authorize(client)
         client.UpdateForwarding(username=self.user_email, enable=True, forward_to=args.forward, action='ARCHIVE')
 
+    def restore_email(self):
+        if args.src is None:
+            print "You must provide a destination user"
+            return None
+
+        service = discovery.build('gmail', 'v1', http=self.http_auth)
+
+        # Start by rebuilding labels
+        existing_labels = []
+        labels_resp = service.users().labels().list(userId=self.user_email).execute()
+        for label in labels_resp['labels']:
+            existing_labels.append(label['name'])
+
+        mail_path = "%s/%s/mail" % (self.data_path, args.src)
+        if os.path.exists(mail_path + '/labels.json'):
+            f = open(mail_path+ '/labels.json', 'r')
+            labels = json.load(f)
+            for label in labels['labels']:
+                if label['type'] == 'system':
+                    continue
+                if label['name'] in existing_labels:
+                    continue
+                label_obj = {
+                    'messageListVisibility': label.get('messageListVisibility', 'show'),
+                    'name': label['name'],
+                    'labelListVisibility': label.get('labelListVisibility', 'labelShow')
+                }
+                print "Creating label with name: %s" % label['name']
+                service.users().labels().create(userId=self.user_email, body=label_obj).execute()
+
+        # Restore emails
+        mail_dir = "%s/%s/mail" % (self.data_path, args.src)
+
+        file_list = os.listdir(mail_dir)
+        num_of_files = len(file_list) - 3
+        num_restored = 0
+
+        for msg_file in file_list:
+            if not msg_file.endswith('.json'):
+                continue
+            if msg_file == 'labels.json':
+                continue
+            data = json.load(open("%s/%s" % (mail_dir, msg_file)))
+
+            email_obj = {
+                'labelIds': data.get('labelIds', [])
+            }
+
+            def http_callback(resp, content):
+                pass
+
+            multi_part_body = "--gamit_multipart_bound\nContent-Type: application/json; charset=UTF-8\n" \
+                              "\n%s\n\n--gamit_multipart_bound\nContent-Type: message/rfc822\n\n%s\n" \
+                              "--gamit_multipart_bound--" % (
+                json.dumps(email_obj),
+                base64.urlsafe_b64decode(data['raw'].encode('ASCII'))
+            )
+            try:
+                googleapiclient.http.HttpRequest(http=self.http_auth, postproc=http_callback,
+                                       uri="https://www.googleapis.com/upload/gmail/v1/users/%s/messages/import?uploadType=%s" % (
+                                           self.user_email,
+                                           'multipart'
+                                       ), method='POST', body=multi_part_body,
+                                                       headers={'Content-Type': 'multipart/related; boundary="gamit_multipart_bound"'}).execute()
+            except googleapiclient.http.HttpError, e:
+                error = json.loads(e.content)['error']
+                if error.get('code') == 400:
+                    for err in error.get('errors', []):
+                        print "Error: %s Reason: %s" % (err['message'], err['reason'])
+                else:
+                    print e.content
+
+            num_restored += 1
+            print "Restored %s/%s emails" % (num_restored, num_of_files)
+
     def download_email(self):
         service = discovery.build('gmail', 'v1', http=self.http_auth)
 
@@ -162,6 +238,12 @@ Body:
         response = service.users().getProfile(userId=self.user_email).execute()
         total_messages = response['messagesTotal']
         current_count = 0
+
+        # Save labels
+        labels_resp = service.users().labels().list(userId=self.user_email).execute()
+        f = open(self.mail_path + '/labels.json', 'w')
+        json.dump(labels_resp, f)
+        f.close()
 
         def save_message(request_id, response, exception):
             if exception is not None:
@@ -204,11 +286,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Google Apps Mitigator')
     parser.add_argument('action', help='What action to take on this user', choices=['download_email', 'set_forward',
                                                                                     'mail_export_to_files',
-                                                                                    'download_drive'])
+                                                                                    'download_drive', 'restore_email'])
     parser.add_argument('-u', '--user', help="Email address of user", required=True)
     parser.add_argument('-a', '--admin', help='Domain administrator user')
     parser.add_argument('-d', '--domain', help='Domain name')
     parser.add_argument('-f', '--forward', help='Email address to forward to')
+    parser.add_argument('-s', '--src', help='Source email account to restore from, should be an email address')
     args = parser.parse_args()
 
     gamit = Gamit(args.user)
