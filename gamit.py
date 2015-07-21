@@ -353,12 +353,15 @@ Body:
                                        ), method='POST', body=multi_part_body,
                                                        headers={'Content-Type': 'multipart/related; boundary="gamit_multipart_bound"'}).execute()
             except googleapiclient.http.HttpError, e:
-                error = json.loads(e.content)['error']
-                if error.get('code') == 400:
-                    for err in error.get('errors', []):
-                        print "Error: %s Reason: %s" % (err['message'], err['reason'])
-                else:
-                    print e.content
+                try:
+                    error = json.loads(e.content)['error']
+                    if error.get('code') == 400:
+                        for err in error.get('errors', []):
+                            print "Error: %s Reason: %s" % (err['message'], err['reason'])
+                    else:
+                        print e.content
+                except:
+                    print e
 
             num_restored += 1
             print "Restored %s/%s emails" % (num_restored, num_of_files)
