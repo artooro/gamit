@@ -213,12 +213,12 @@ Body:
             data = json.load(open("%s/%s" % (mail_dir, msg_file)))
 
             # Skip chat messages
-            if 'CHAT' in data['labelIds']:
+            if 'CHAT' in data.get('labelIds', []):
                 num_restored += 1
                 continue
 
             label_ids = []
-            for lbl in data['labelIds']:
+            for lbl in data.get('labelIds', []):
                 if label_map.get(lbl) is None:
                     print "Label with ID %s cannot be matched to new account" % lbl
                     continue
