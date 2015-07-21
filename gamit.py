@@ -16,6 +16,7 @@ import unicodedata
 import re
 import codecs
 import time
+import datetime
 
 
 KEY_FILE = "%s/oauthkey.json" % os.path.dirname(os.path.realpath(__file__))
@@ -256,6 +257,7 @@ Body:
             print "Restored %s/%s emails" % (num_restored, num_of_files)
 
     def download_email(self):
+        print "Starting download at %s" % datetime.datetime.now().isoformat()
         service = discovery.build('gmail', 'v1', http=self.http_auth)
 
         # Get total number of messages in mailbox
@@ -285,33 +287,33 @@ Body:
                           callback=save_message)
             batch.execute(http=self.http_auth)
 
-        while True:
-            page_token = None
-
+        page_token = None
+        while page_token is not False:
+            # Try listing messages
             try:
                 if page_token is None:
                     response = service.users().messages().list(userId=self.user_email).execute()
                 else:
                     response = service.users().messages().list(userId=self.user_email, pageToken=page_token).execute()
 
-                current_count = current_count + len(response['messages'])
-                print "Downloading %s/%s messages" %(current_count, total_messages)
-                while True:
-                    try:
-                        download_messages(response['messages'])
-                        break
-                    except:
-                        print "Failure to download, re-trying in 1 second"
-                        time.sleep(1)
-
-                if 'nextPageToken' in response:
-                    page_token = response['nextPageToken']
-                else:
-                    break
+                # Try downloading messages
+                try:
+                    download_messages(response['messages'])
+                    current_count = current_count + len(response['messages'])
+                    print "Downloading %s/%s messages" %(current_count, total_messages)
+                    if 'nextPageToken' in response:
+                        page_token = response['nextPageToken']
+                    else:
+                        page_token = False
+                except:
+                    print "Problem downloading batch of messages, will re-try in 1 second"
+                    time.sleep(1)
             except:
-                print "There was an error, re-trying in 1 second"
+                print "Problem with listing messages for download. Will re-try in 1 second"
                 time.sleep(1)
-                pass
+
+        print "Ended download at %s" % datetime.datetime.now().isoformat()
+
 
 def safe_filename(filename):
     value = unicodedata.normalize('NFKD', filename).encode('ascii', 'ignore')
