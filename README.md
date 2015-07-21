@@ -4,6 +4,8 @@ Gamit is a tool written for google apps administrators and currently has the fol
 
  - Download a user's mailbox
  - Restore a mailbox to a user
+ - Download a restorable list of groups from a domain
+ - Restore the downloaded list of groups to the same domain name or to a new domain name
  - Export a downloaded mailbox to a human-readable structure
  - Set a forwarding rule for a user
  - Download a user's Google Drive files

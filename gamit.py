@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 from oauth2client.client import SignedJwtAssertionCredentials
 import os
 import json
@@ -6,12 +7,12 @@ from httplib2 import Http
 from googleapiclient import discovery
 from googleapiclient.http import BatchHttpRequest
 import googleapiclient
+import googleapiclient.errors
 import gdata
 import gdata.apps.emailsettings.client
 import gdata.gauth
 import email
 import base64
-import datetime
 import unicodedata
 import re
 import codecs
@@ -21,7 +22,9 @@ import datetime
 
 KEY_FILE = "%s/oauthkey.json" % os.path.dirname(os.path.realpath(__file__))
 SCOPE = ['https://mail.google.com/', 'https://www.googleapis.com/auth/drive',
-         'https://apps-apis.google.com/a/feeds/emailsettings/2.0/']
+         'https://apps-apis.google.com/a/feeds/emailsettings/2.0/',
+         'https://www.googleapis.com/auth/admin.directory.group',
+         'https://www.googleapis.com/auth/admin.directory.user']
 _version = '1'
 
 
@@ -29,6 +32,7 @@ class Gamit:
     def __init__(self, user_email):
         self.user_email = user_email
         oauth_key = json.load(file(KEY_FILE, 'r'))
+        self.oauth_key = oauth_key
         if args.admin is not None:
             sub_user = args.admin
         else:
@@ -55,6 +59,110 @@ class Gamit:
         self.data_path = data_path
         self.user_path = user_path
         self.mail_path = mail_path
+
+    def access_info(self):
+        print "Client Name: %s" % self.oauth_key['client_id']
+        print "Scopes: %s" % ','.join(SCOPE)
+
+    def download_groups(self):
+        service = discovery.build('admin', 'directory_v1', http=self.http_auth)
+        domain = self.user_email.split('@')[1]
+
+        response = service.groups().list(domain=domain).execute()
+        groups = []
+        page_token = None
+        while page_token is not False:
+            for group in response['groups']:
+                print "Fetching members for group %s" % group['email']
+                page_token2 = None
+                members = []
+                while page_token2 is not False:
+                    if page_token2 is None:
+                        members_response = service.members().list(groupKey=group['id']).execute()
+                    else:
+                        members_response = service.members().list(groupKey=group['id'], pageToken=page_token2).execute()
+
+                    for member in members_response.get('members', []):
+                        members.append(member)
+
+                    if 'nextPageToken' in members_response:
+                        page_token2 = members_response['nextPageToken']
+                    else:
+                        page_token2 = False
+
+                groups.append({
+                    'group': group,
+                    'members': members
+                })
+
+            response = service.groups().list(domain=domain, pageToken=response['nextPageToken']).execute()
+            if 'nextPageToken' in response:
+                page_token = response['nextPageToken']
+            else:
+                page_token = False
+
+        file_name = "%s/groups_%s.json" % (self.data_path, domain)
+        f = open(file_name, 'w')
+        json.dump(groups, f)
+        f.close()
+        print "Groups have been saved to %s" % file_name
+
+    def restore_groups(self):
+        if args.src is None:
+            print "You must provide a data file to restore groups from"
+            return None
+
+        service = discovery.build('admin', 'directory_v1', http=self.http_auth)
+
+        f = open(args.src, 'r')
+        data = json.load(f)
+        for group in data:
+            time.sleep(1)  # Wait to prevent exceeding request rate
+            if args.domain is None:
+                primary_email = group['group']['email']
+            else:
+                primary_email = "%s@%s" % (group['group']['email'].split('@')[0], args.domain)
+            print "Creating group: %s" % primary_email
+            group_obj = {
+                'email': primary_email,
+                'description': group['group']['description'],
+                'name': group['group']['name']
+            }
+            try:
+                new_group = service.groups().insert(body=group_obj).execute()
+            except googleapiclient.errors.HttpError, e:
+                try:
+                    data = json.loads(e.content)
+                except:
+                    print e
+                    continue
+                if data['error']['code'] == 409:
+                    print "Group already exists"
+                    continue
+                else:
+                    print e.content
+
+            # Add members to group
+            for member in group['members']:
+                if member['type'] == 'CUSTOMER':
+                    continue  # We don't support CUSTOMER types at this point
+                member_obj = {
+                    'role': member['role'],
+                    'email': member['email']
+                }
+                print "Adding member %s" % member['email']
+                service.members().insert(groupKey=new_group['id'], body=member_obj).execute()
+
+            # Add aliases to group
+            for alias in group['group'].get('aliases', []):
+                if args.domain is None:
+                    alias_email = alias
+                else:
+                    alias_email = "%s@%s" % (alias.split('@')[0], args.domain)
+                print "Adding alias to group: %s" % alias_email
+                service.groups().aliases().insert(groupKey=new_group['id'], body={'alias': alias_email}).execute()
+
+            print "Finished creating group"
 
     def download_drive(self):
         service = discovery.build('drive', 'v2', http=self.http_auth)
@@ -245,7 +353,6 @@ Body:
                                        ), method='POST', body=multi_part_body,
                                                        headers={'Content-Type': 'multipart/related; boundary="gamit_multipart_bound"'}).execute()
             except googleapiclient.http.HttpError, e:
-                print data.get('labelIds')
                 error = json.loads(e.content)['error']
                 if error.get('code') == 400:
                     for err in error.get('errors', []):
@@ -326,13 +433,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Google Apps Mitigator')
     parser.add_argument('action', help='What action to take on this user', choices=['download_email', 'set_forward',
                                                                                     'mail_export_to_files',
-                                                                                    'download_drive', 'restore_email'])
+                                                                                    'download_drive', 'restore_email',
+                                                                                    'download_groups', 'restore_groups',
+                                                                                    'access_info'])
     parser.add_argument('-u', '--user', help="Email address of user", required=True)
     parser.add_argument('-b', '--base', help='Path of base folder to store gamitdata')
     parser.add_argument('-a', '--admin', help='Domain administrator user')
     parser.add_argument('-d', '--domain', help='Domain name')
     parser.add_argument('-f', '--forward', help='Email address to forward to')
-    parser.add_argument('-s', '--src', help='Source email account to restore from, should be an email address')
+    parser.add_argument('-s', '--src', help='Source email address or path to file to restore from')
     args = parser.parse_args()
 
     gamit = Gamit(args.user)
