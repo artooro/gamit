@@ -271,7 +271,7 @@ Body:
 
     def restore_email(self):
         if args.src is None:
-            print "You must provide a destination user"
+            print "You must provide a source user address"
             return None
 
         service = discovery.build('gmail', 'v1', http=self.http_auth)
@@ -313,10 +313,15 @@ Body:
         mail_dir = "%s/%s/mail" % (self.data_path, args.src)
 
         file_list = os.listdir(mail_dir)
-        num_of_files = len(file_list) - 3
+        num_of_files = len(file_list) - 2
         num_restored = 0
 
         for msg_file in file_list:
+            if os.path.exists("%s/%s.done" % (mail_dir, msg_file)):
+                num_restored += 1
+                print "Message %s/%s already restored" % (num_restored, num_of_files)
+                continue
+
             if not msg_file.endswith('.json'):
                 continue
             if msg_file == 'labels.json':
@@ -340,31 +345,46 @@ Body:
             }
 
             def http_callback(resp, content):
-                pass
-
-            multi_part_body = "--gamit_multipart_bound\nContent-Type: application/json; charset=UTF-8\n" \
-                              "\n%s\n\n--gamit_multipart_bound\nContent-Type: message/rfc822\n\n%s\n" \
-                              "--gamit_multipart_bound--" % (
-                json.dumps(email_obj),
-                base64.urlsafe_b64decode(data['raw'].encode('ASCII'))
-            )
-            try:
-                googleapiclient.http.HttpRequest(http=self.http_auth, postproc=http_callback,
-                                       uri="https://www.googleapis.com/upload/gmail/v1/users/%s/messages/import?uploadType=%s" % (
-                                           self.user_email,
-                                           'multipart'
-                                       ), method='POST', body=multi_part_body,
-                                                       headers={'Content-Type': 'multipart/related; boundary="gamit_multipart_bound"'}).execute()
-            except googleapiclient.http.HttpError, e:
                 try:
-                    error = json.loads(e.content)['error']
-                    if error.get('code') == 400:
-                        for err in error.get('errors', []):
-                            print "Error: %s Reason: %s" % (err['message'], err['reason'])
-                    else:
-                        print e.content
+                    print "Restored message %s" % json.loads(content)['id']
                 except:
-                    print e
+                    print "Error in HTTP request"
+                    print resp
+
+            while True:
+                multi_part_body = "--gamit_multipart_bound\nContent-Type: application/json; charset=UTF-8\n" \
+                                  "\n%s\n\n--gamit_multipart_bound\nContent-Type: message/rfc822\n\n%s\n" \
+                                  "--gamit_multipart_bound--" % (
+                    json.dumps(email_obj),
+                    base64.urlsafe_b64decode(data['raw'].encode('ASCII'))
+                )
+
+                try:
+                    googleapiclient.http.HttpRequest(http=self.http_auth, postproc=http_callback,
+                                           uri="https://www.googleapis.com/upload/gmail/v1/users/%s/messages/import?uploadType=%s" % (
+                                               self.user_email,
+                                               'multipart'
+                                           ), method='POST', body=multi_part_body,
+                                                           headers={'Content-Type': 'multipart/related; boundary="gamit_multipart_bound"'}).execute()
+
+                    # Save migrated status file
+                    sf = open("%s/%s.done" % (mail_dir, msg_file), 'w')
+                    sf.write("\n")
+                    sf.close()
+                    break
+                except googleapiclient.http.HttpError, e:
+                    try:
+                        error = json.loads(e.content)['error']
+                        if error.get('code') == 400:
+                            for err in error.get('errors', []):
+                                print "Error: %s Reason: %s" % (err['message'], err['reason'])
+                            break  # Email cannot be migrated so don't re-try this request
+                        else:
+                            print e.content
+                    except:
+                        print e
+                    print "Re-trying request in 1 second"
+                    time.sleep(1)
 
             num_restored += 1
             print "Restored %s/%s emails" % (num_restored, num_of_files)
