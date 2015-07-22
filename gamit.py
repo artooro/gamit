@@ -296,7 +296,10 @@ Body:
                 'labelListVisibility': label.get('labelListVisibility', 'labelShow')
             }
             print "Creating label with name: %s" % label['name']
-            service.users().labels().create(userId=self.user_email, body=label_obj).execute()
+            try:
+                service.users().labels().create(userId=self.user_email, body=label_obj).execute()
+            except googleapiclient.errors.HttpError, e:
+                print e
 
         # Map old label IDs to their new label IDs
         label_map = {}
