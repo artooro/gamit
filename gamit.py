@@ -226,7 +226,7 @@ class Gamit:
             return parent_path
 
         for fr in file_list:
-            fr_title = fr['title'].decode('utf-8', 'ignore')
+            fr_title = fr['title'].encode('utf-8', 'ignore')
             print "Downloading file %s" % fr_title
             if fr['mimeType'] == 'application/vnd.google-apps.folder':
                 print "File is a folder, skipping"
