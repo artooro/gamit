@@ -226,7 +226,8 @@ class Gamit:
             return parent_path
 
         for fr in file_list:
-            print "Downloading file %s" % fr['title']
+            fr_title = fr['title'].decode('utf-8', 'ignore')
+            print "Downloading file %s" % fr_title
             if fr['mimeType'] == 'application/vnd.google-apps.folder':
                 print "File is a folder, skipping"
                 continue
@@ -253,7 +254,7 @@ class Gamit:
                         print "This type is unsupported for download: %s" % fr['mimeType']
                         break
                     download_url = fr['exportLinks'][export_type]
-                    file_name = "%s.%s" % (fr['title'], file_ext)
+                    file_name = "%s.%s" % (fr_title, file_ext)
                 else:
                     file_name = fr['originalFilename']
 
