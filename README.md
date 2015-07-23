@@ -8,8 +8,9 @@ Gamit is a tool written for google apps administrators and currently has the fol
  - Restore the downloaded list of groups to the same domain name or to a new domain name
  - Export a downloaded mailbox to a human-readable structure
  - Set a forwarding rule for a user
- - Download a user's Google Drive files
- 
+ - Download a user's Google Drive files while keeping the folder structure in place, native docs, slides, and sheets are
+  saved as Microsoft Office files
+
 ## Getting Started
 
 Gamit requires an authkey.json configuration file. To generate this file create a Google Cloud project at

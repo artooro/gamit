@@ -56,9 +56,13 @@ class Gamit:
         mail_path = user_path + '/' + 'mail'
         if not os.path.isdir(mail_path):
             os.mkdir(mail_path)
+        drive_path = user_path + '/' + 'drive'
+        if not os.path.isdir(drive_path):
+            os.mkdir(drive_path)
         self.data_path = data_path
         self.user_path = user_path
         self.mail_path = mail_path
+        self.drive_path = drive_path
 
     def access_info(self):
         print "Client Name: %s" % self.oauth_key['client_id']
@@ -167,19 +171,108 @@ class Gamit:
     def download_drive(self):
         service = discovery.build('drive', 'v2', http=self.http_auth)
 
-        result = []
+        file_list = []
         page_token = None
+        print "Downloading list of files"
         while True:
-            param = {}
-            if page_token:
-                param['pageToken'] = page_token
-            files = service.files().list(**param).execute()
+            try:
+                param = {}
+                if page_token:
+                    param['pageToken'] = page_token
+                files = service.files().list(**param).execute()
 
-            result.extend(files['items'])
-            page_token = files.get('nextPageToken')
-            if not page_token:
-                break
-        print result
+                file_list.extend(files['items'])
+                page_token = files.get('nextPageToken')
+                if not page_token:
+                    break
+            except googleapiclient.errors.HttpError, e:
+                print "There was an error: %s" % e
+
+        parent_cache = {}
+
+        def get_file_path(fr):
+            if len(fr['parents']) < 1:
+                return '/'
+
+            result = parent_cache.get(fr['parents'][0]['id'])
+            if result:
+                return result
+
+            print "Building path for this parent ID: %s" % fr['parents'][0]['id']
+            last_item = None
+            parent_path = ''
+            while True:
+                if last_item is None:
+                    last_item = fr
+                if len(last_item['parents']) < 1:
+                    parent_path += '/'
+                    break
+                if last_item['parents'][0]['isRoot'] is True:
+                    parent_path += '/'
+                    break
+                else:
+                    parent_item = service.files().get(fileId=last_item['parents'][0]['id']).execute()
+                    parent_path = "/%s/%s" % (parent_item['title'], parent_path)
+                    last_item = parent_item
+
+            parent_cache[fr['parents'][0]['id']] = parent_path
+            # Make sure path exists on the filesystem
+            path = self.drive_path + parent_path
+            if not os.path.isdir(path):
+                print "Creating path: %s" % path
+                print "Parent path is: %s" % parent_path
+                os.makedirs(path)
+
+            return parent_path
+
+        for fr in file_list:
+            print "Downloading file %s" % fr['title']
+            if fr['mimeType'] == 'application/vnd.google-apps.folder':
+                print "File is a folder, skipping"
+                continue
+
+            while True:
+                download_url = fr.get('downloadUrl')
+                if not download_url:
+                    if fr['mimeType'] == 'application/vnd.google-apps.spreadsheet':
+                        export_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                        file_ext = 'xlsx'
+                    elif fr['mimeType'] == 'application/vnd.google-apps.presentation':
+                        export_type = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                        file_ext = 'pptx'
+                    elif fr['mimeType'] == 'application/vnd.google-apps.document':
+                        export_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                        file_ext = 'docx'
+                    elif fr['mimeType'] == 'application/vnd.google-apps.drawing':
+                        export_type = 'application/pdf'
+                        file_ext = 'pdf'
+                    elif fr['mimeType'] == 'application/vnd.google-apps.script':
+                        export_type = 'application/vnd.google-apps.script+json'
+                        file_ext = 'json'
+                    else:
+                        print "This type is unsupported for download: %s" % fr['mimeType']
+                        break
+                    download_url = fr['exportLinks'][export_type]
+                    file_name = "%s.%s" % (fr['title'], file_ext)
+                else:
+                    file_name = fr['originalFilename']
+
+                try:
+                    resp, content = service._http.request(download_url)
+                    if resp.status == 200:
+                        file_name = file_name.replace('/', '-')
+                        file_name = "%s%s" % (get_file_path(fr), file_name)
+                        print "Saving file %s" % file_name
+                        f = open("%s%s" % (self.drive_path, file_name), 'w')
+                        f.write(content)
+                        f.close()
+                        break
+                    else:
+                        print "There was an error: %s" % resp
+                except googleapiclient.errors.HttpError, e:
+                    print "Error occured: %s" % e.content
+                    print "Going to re-try download in 1 second"
+                    time.sleep(1)
 
     def mail_export_to_files(self):
         save_dir = "%s/export" % self.mail_path
