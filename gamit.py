@@ -212,7 +212,7 @@ class Gamit:
                     break
                 else:
                     parent_item = service.files().get(fileId=last_item['parents'][0]['id']).execute()
-                    parent_path = "/%s/%s" % (parent_item['title'], parent_path)
+                    parent_path = "/%s/%s" % (parent_item['title'].encode('utf-8', 'ignore'), parent_path)
                     last_item = parent_item
 
             parent_cache[fr['parents'][0]['id']] = parent_path
