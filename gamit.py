@@ -256,7 +256,7 @@ class Gamit:
                     download_url = fr['exportLinks'][export_type]
                     file_name = "%s.%s" % (fr_title, file_ext)
                 else:
-                    file_name = fr['originalFilename']
+                    file_name = fr['originalFilename'].encode('utf-8', 'ignore')
 
                 try:
                     resp, content = service._http.request(download_url)
