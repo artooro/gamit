@@ -43,26 +43,29 @@ class Gamit:
         self.credentials = credentials
 
         # Check if storage folder exists
-        if args.base is None:
-            data_path = os.path.expanduser("~") + '/gamitdata'
-        else:
-            data_path = args.base + '/gamitdata'
-        if not os.path.isdir(data_path):
-            os.mkdir(data_path)
-            print "Data directory ~/gamitdata initialized"
-        user_path = data_path + '/' + self.user_email
-        if not os.path.isdir(user_path):
-            os.mkdir(user_path)
-        mail_path = user_path + '/' + 'mail'
-        if not os.path.isdir(mail_path):
-            os.mkdir(mail_path)
-        drive_path = user_path + '/' + 'drive'
-        if not os.path.isdir(drive_path):
-            os.mkdir(drive_path)
-        self.data_path = data_path
-        self.user_path = user_path
-        self.mail_path = mail_path
-        self.drive_path = drive_path
+        try:
+            if args.base is None:
+                data_path = os.path.expanduser("~") + '/gamitdata'
+            else:
+                data_path = args.base + '/gamitdata'
+            if not os.path.isdir(data_path):
+                os.mkdir(data_path)
+                print "Data directory ~/gamitdata initialized"
+            user_path = data_path + '/' + self.user_email
+            if not os.path.isdir(user_path):
+                os.mkdir(user_path)
+            mail_path = user_path + '/' + 'mail'
+            if not os.path.isdir(mail_path):
+                os.mkdir(mail_path)
+            drive_path = user_path + '/' + 'drive'
+            if not os.path.isdir(drive_path):
+                os.mkdir(drive_path)
+            self.data_path = data_path
+            self.user_path = user_path
+            self.mail_path = mail_path
+            self.drive_path = drive_path
+        except OSError as e:
+            print "Was not able to create directory paths, going to continue anyway: %s" % e
 
     def access_info(self):
         print "Client Name: %s" % self.oauth_key['client_id']
@@ -264,7 +267,11 @@ class Gamit:
                         file_name = file_name.replace('/', '-')
                         file_name = "%s%s" % (get_file_path(fr), file_name)
                         print "Saving file %s" % file_name
-                        f = open("%s%s" % (self.drive_path, file_name), 'w')
+                        file_save_path = "%s%s" % (self.drive_path, file_name)
+                        if os.path.isdir(file_save_path):
+                            print "Save path is a folder, skipping."
+                            break
+                        f = open(file_save_path, 'w')
                         f.write(content)
                         f.close()
                         break
