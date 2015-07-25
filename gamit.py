@@ -538,9 +538,18 @@ Body:
 
                 # Try downloading messages
                 try:
-                    download_messages(response['messages'])
-                    current_count = current_count + len(response['messages'])
-                    print "Downloading %s/%s messages" %(current_count, total_messages)
+                    for message in response['messages']:
+                        # Check if message is already downloaded
+                        if os.path.exists("%s/%s.json" % (self.mail_path, message['id'])):
+                            print "Message %s has already been downloaded" % message['id']
+                            response['messages'].remove(message)
+                            print "Length of list is now %s" % len(response['messages'])
+                    if len(response['messages']) <= 0:
+                        print "This batch has already been downloaded"
+                    else:
+                        download_messages(response['messages'])
+                        current_count = current_count + len(response['messages'])
+                        print "Downloading %s/%s messages" % (current_count, total_messages)
                     if 'nextPageToken' in response:
                         page_token = response['nextPageToken']
                     else:
