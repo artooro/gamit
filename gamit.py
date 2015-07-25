@@ -293,7 +293,7 @@ class Gamit:
                             print "Too many requests, going to back off for a bit"
                             time.sleep(10)
                         elif resp.status == 400:
-                            print "Data error: " % resp
+                            print "Data error: %s" % resp
                             break
                         print "There was an error: %s" % resp
                         time.sleep(1)
