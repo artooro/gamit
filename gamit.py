@@ -288,16 +288,22 @@ class Gamit:
                         f.close()
                         break
                     else:
-                        if resp.status in (429, 503):
+                        if resp.status == 429:
                             # Too many requests, back off for 10 seconds
                             print "Too many requests, going to back off for a bit"
                             time.sleep(10)
                         elif resp.status == 400:
                             print "Data error: %s" % resp
+                            time.sleep(1)
                             break
-                        print "Unknown error: %s" % resp
-                        print "Sleeping for 1 second before trying again"
-                        time.sleep(1)
+                        elif resp.status == 503:
+                            print "Error 503 does not seem to recover, sleep for 15 seconds and go to next"
+                            time.sleep(15)
+                            break
+                        else:
+                            print "Unknown error: %s" % resp
+                            print "Sleeping for 1 second before trying again"
+                            time.sleep(1)
                 except googleapiclient.errors.HttpError, e:
                     print "Error occured: %s" % e.content
                     print "Going to re-try download in 1 second"
