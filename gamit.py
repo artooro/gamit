@@ -288,7 +288,15 @@ class Gamit:
                         f.close()
                         break
                     else:
+                        if resp.status == 429:
+                            # Too many requests, back off for 10 seconds
+                            print "Too many requests, going to back off for a bit"
+                            time.sleep(10)
+                        elif resp.status == 400:
+                            print "Data error: " % resp
+                            break
                         print "There was an error: %s" % resp
+                        time.sleep(1)
                 except googleapiclient.errors.HttpError, e:
                     print "Error occured: %s" % e.content
                     print "Going to re-try download in 1 second"
