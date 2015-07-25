@@ -268,15 +268,21 @@ class Gamit:
                     file_name = fr['originalFilename'].encode('utf-8', 'ignore')
 
                 try:
+                    file_name = file_name.replace('/', '-')
+                    if len(file_name) > 200:
+                        # Shorten file name to 200 characters
+                        file_name = file_name[:200]
+                    file_name = "%s%s" % (get_file_path(fr), file_name)
+
+                    # If file has already been downloaded skip it
+                    if os.path.exists("%s%s" % (self.drive_path, file_name)):
+                        print "File already exists"
+                        break
+
                     resp, content = service._http.request(download_url)
                     if resp.status == 200:
-                        file_name = file_name.replace('/', '-')
-                        file_name = "%s%s" % (get_file_path(fr), file_name)
                         print "Saving file %s" % file_name
                         file_save_path = "%s%s" % (self.drive_path, file_name)
-                        if os.path.isdir(file_save_path):
-                            print "Save path is a folder, skipping."
-                            break
                         f = open(file_save_path, 'w')
                         f.write(content)
                         f.close()
