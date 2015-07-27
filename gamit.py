@@ -196,6 +196,7 @@ class Gamit:
                     break
             except googleapiclient.errors.HttpError, e:
                 print "There was an error: %s" % e
+                time.sleep(5)
 
         parent_cache = {}
 
