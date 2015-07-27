@@ -300,6 +300,10 @@ class Gamit:
                             print "Error 503 does not seem to recover, sleep for 15 seconds and go to next"
                             time.sleep(15)
                             break
+                        elif resp.status == 403:
+                            print "Access forbidden: %s" % resp
+                            time.sleep(1)
+                            break
                         else:
                             print "Unknown error: %s" % resp
                             print "Sleeping for 1 second before trying again"
