@@ -304,6 +304,10 @@ class Gamit:
                             print "Access forbidden: %s" % resp
                             time.sleep(1)
                             break
+                        elif resp.status == 404:
+                            print "Item not found: %s" % resp
+                            time.sleep(1)
+                            break
                         else:
                             print "Unknown error: %s" % resp
                             print "Sleeping for 1 second before trying again"
