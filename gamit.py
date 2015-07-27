@@ -568,13 +568,13 @@ Body:
 
                 # Try downloading messages
                 try:
-                    for message in response['messages']:
+                    for message in response.get('messages', []):
                         # Check if message is already downloaded
                         if os.path.exists("%s/%s.json" % (self.mail_path, message['id'])):
                             print "Message %s has already been downloaded" % message['id']
                             response['messages'].remove(message)
                             print "Length of list is now %s" % len(response['messages'])
-                    if len(response['messages']) <= 0:
+                    if len(response.get('messages', [])) <= 0:
                         print "This batch has already been downloaded"
                     else:
                         download_messages(response['messages'])
