@@ -130,7 +130,7 @@ class Gamit:
         f = open(args.src, 'r')
         data = json.load(f)
         for group in data:
-            time.sleep(1)  # Wait to prevent exceeding request rate
+            time.sleep(2)  # Wait to prevent exceeding request rate
             if args.domain is None:
                 primary_email = group['group']['email']
             else:
@@ -151,7 +151,6 @@ class Gamit:
                     continue
                 if data['error']['code'] == 409:
                     print "Group already exists"
-                    continue
                 else:
                     print e.content
 
@@ -164,7 +163,20 @@ class Gamit:
                     'email': member['email']
                 }
                 print "Adding member %s" % member['email']
-                service.members().insert(groupKey=new_group['id'], body=member_obj).execute()
+                try:
+                    service.members().insert(groupKey=primary_email, body=member_obj).execute()
+                except googleapiclient.errors.HttpError, e:
+                    try:
+                        data = json.loads(e.content)
+                    except:
+                        print e
+                        continue
+                    if data['error']['code'] == 409:
+                        print "Member already exists, skipping"
+                        time.sleep(1)
+                    else:
+                        print e.content
+
 
             # Add aliases to group
             for alias in group['group'].get('aliases', []):
@@ -173,7 +185,19 @@ class Gamit:
                 else:
                     alias_email = "%s@%s" % (alias.split('@')[0], args.domain)
                 print "Adding alias to group: %s" % alias_email
-                service.groups().aliases().insert(groupKey=new_group['id'], body={'alias': alias_email}).execute()
+                try:
+                    service.groups().aliases().insert(groupKey=primary_email, body={'alias': alias_email}).execute()
+                except googleapiclient.errors.HttpError, e:
+                    try:
+                        data = json.loads(e.content)
+                    except:
+                        print e
+                        continue
+                    if data['error']['code'] == 409:
+                        print "Alias already exists, skipping"
+                        time.sleep(1)
+                    else:
+                        print e.content
 
             print "Finished creating group"
 
