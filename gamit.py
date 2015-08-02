@@ -5,6 +5,7 @@ import json
 import argparse
 from httplib2 import Http
 from googleapiclient import discovery
+from oauth2client import client
 from googleapiclient.http import BatchHttpRequest
 import googleapiclient
 import googleapiclient.errors
@@ -21,6 +22,7 @@ import datetime
 
 
 KEY_FILE = "%s/oauthkey.json" % os.path.dirname(os.path.realpath(__file__))
+KEY_FILE_NATIVE = "%s/oauth_native.json" % os.path.dirname(os.path.realpath(__file__))
 SCOPE = ['https://mail.google.com/', 'https://www.googleapis.com/auth/drive',
          'https://apps-apis.google.com/a/feeds/emailsettings/2.0/',
          'https://www.googleapis.com/auth/admin.directory.group',
@@ -37,7 +39,19 @@ class Gamit:
             sub_user = args.admin
         else:
             sub_user = user_email
-        credentials = SignedJwtAssertionCredentials(oauth_key['client_email'], oauth_key['private_key'], scope=SCOPE,
+
+        if args.oauth is not None:
+            flow = client.flow_from_clientsecrets(
+                KEY_FILE_NATIVE,
+                scope=SCOPE,
+                redirect_uri='urn:ietf:wg:oauth:2.0:oob'
+            )
+            auth_uri = flow.step1_get_authorize_url()
+            print "Open your browser and go to:\n%s" % auth_uri
+            auth_code = raw_input('Enter code: ')
+            credentials = flow.step2_exchange(auth_code)
+        else:
+            credentials = SignedJwtAssertionCredentials(oauth_key['client_email'], oauth_key['private_key'], scope=SCOPE,
                                                     user_agent="Gamit %s" % _version, sub=sub_user)
         self.http_auth = credentials.authorize(Http())
         self.credentials = credentials
@@ -200,6 +214,146 @@ class Gamit:
                         print e.content
 
             print "Finished creating group"
+
+    def download_prev(self):
+        if args.date is None:
+            print "Must provide --date argument"
+            return None
+        service = discovery.build('drive', 'v2', http=self.http_auth)
+
+        file_list = []
+        page_token = None
+        print "Downloading list of files"
+        while True:
+            try:
+                param = {}
+                if page_token:
+                    param['pageToken'] = page_token
+                files = service.files().list(**param).execute()
+
+                file_list.extend(files['items'])
+                page_token = files.get('nextPageToken')
+                if not page_token:
+                    break
+            except googleapiclient.errors.HttpError, e:
+                print "There was an error: %s" % e
+                time.sleep(5)
+
+        print "Walking through list of files"
+        revert_to = datetime.datetime.strptime(args.date, '%Y-%m-%d')
+        for df in file_list:
+            if df['mimeType'] == 'application/vnd.google-apps.folder':
+                continue  # skipping folder which does not support revisions
+            file_title = df['title'].encode('utf-8', 'ignore')
+            print "\n%s" % file_title
+            print "Type: %s" % df['mimeType']
+
+            resp = service.revisions().list(fileId=df['id']).execute()
+            most_recent_found = None
+            for rev in resp.get('items', []):
+                print "--Found revision: %s" % rev['modifiedDate']
+                rev_date = datetime.datetime.strptime(rev['modifiedDate'], '%Y-%m-%dT%H:%M:%S.%fZ')
+                if rev_date <= revert_to:
+                    print "Is eligible for reversion"
+                    if most_recent_found is None:
+                        most_recent_found = rev
+                        print "This is the only good revision we know of so far"
+                    elif rev_date > datetime.datetime.strptime(most_recent_found['modifiedDate'], '%Y-%m-%dT%H:%M:%S.%fZ'):
+                        most_recent_found = rev
+                        print "This is now the most recent good revision"
+                    else:
+                        print "We already found a revision newer than this one"
+                else:
+                    print "It too new for reversion"
+            if most_recent_found is not None:
+                print "#Looking like we could revert to revision modified %s" % most_recent_found['modifiedDate']
+                while True:
+                    download_url = most_recent_found.get('downloadUrl')
+                    if not download_url:
+                        if most_recent_found['mimeType'] == 'application/vnd.google-apps.spreadsheet':
+                            export_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                            file_ext = 'xlsx'
+                        elif most_recent_found['mimeType'] == 'application/vnd.google-apps.presentation':
+                            export_type = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                            file_ext = 'pptx'
+                        elif most_recent_found['mimeType'] == 'application/vnd.google-apps.document':
+                            export_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                            file_ext = 'docx'
+                        elif most_recent_found['mimeType'] == 'application/vnd.google-apps.drawing':
+                            export_type = 'application/pdf'
+                            file_ext = 'pdf'
+                        elif most_recent_found['mimeType'] == 'application/vnd.google-apps.script':
+                            export_type = 'application/vnd.google-apps.script+json'
+                            file_ext = 'json'
+                        else:
+                            print "This type is unsupported for download: %s" % most_recent_found['mimeType']
+                            break
+                        download_url = most_recent_found['exportLinks'][export_type]
+                        file_name = "%s.%s" % (file_title, file_ext)
+                    else:
+                        file_name = most_recent_found['originalFilename'].encode('utf-8', 'ignore')
+
+                    try:
+                        file_name = file_name.replace('/', '-')
+                        if len(file_name) > 200:
+                            # Shorten file name to 200 characters
+                            file_name = file_name[:200]
+
+                        save_path = "%s/%s" % (self.drive_path, file_name)
+                        if os.path.exists(save_path):
+                            print "Path %s exists" % save_path
+                            incr = 1
+                            while True:
+                                save_path = "%s/%s.%s" % (self.drive_path, incr, file_name)
+                                if not os.path.exists(save_path):
+                                    print "Changed path to %s" % save_path
+                                    break
+                                else:
+                                    incr += 1
+
+                        # If file has already been downloaded skip it
+                        if os.path.exists(save_path):
+                            print "File already exists"
+                            break
+
+                        resp, content = service._http.request(download_url)
+                        if resp.status == 200:
+                            print "Saving file %s" % file_name
+                            f = open(save_path, 'w')
+                            f.write(content)
+                            f.close()
+                            break
+                        else:
+                            if resp.status == 429:
+                                # Too many requests, back off for 10 seconds
+                                print "Too many requests, going to back off for a bit"
+                                time.sleep(10)
+                            elif resp.status == 400:
+                                print "Data error: %s" % resp
+                                time.sleep(1)
+                                break
+                            elif resp.status == 503:
+                                print "Error 503 does not seem to recover, sleep for 15 seconds and go to next"
+                                time.sleep(15)
+                                break
+                            elif resp.status == 403:
+                                print "Access forbidden: %s" % resp
+                                time.sleep(1)
+                                break
+                            elif resp.status == 404:
+                                print "Item not found: %s" % resp
+                                time.sleep(1)
+                                break
+                            else:
+                                print "Unknown error: %s" % resp
+                                print "Sleeping for 1 second before trying again"
+                                time.sleep(1)
+                    except googleapiclient.errors.HttpError, e:
+                        print "Error occured: %s" % e.content
+                        print "Going to re-try download in 1 second"
+                        time.sleep(1)
+            else:
+                print "!This file has no revisions we can revert to"
 
     def download_drive(self):
         service = discovery.build('drive', 'v2', http=self.http_auth)
@@ -631,13 +785,15 @@ if __name__ == "__main__":
                                                                                     'mail_export_to_files',
                                                                                     'download_drive', 'restore_email',
                                                                                     'download_groups', 'restore_groups',
-                                                                                    'access_info'])
+                                                                                    'access_info', 'download_prev'])
     parser.add_argument('-u', '--user', help="Email address of user", required=True)
     parser.add_argument('-b', '--base', help='Path of base folder to store gamitdata')
     parser.add_argument('-a', '--admin', help='Domain administrator user')
     parser.add_argument('-d', '--domain', help='Domain name')
     parser.add_argument('-f', '--forward', help='Email address to forward to')
     parser.add_argument('-s', '--src', help='Source email address or path to file to restore from')
+    parser.add_argument('--oauth', help='Authenticate as a user vs. using a service account')
+    parser.add_argument('--date', help='Date in format YYYY-MM-DD')
     args = parser.parse_args()
 
     gamit = Gamit(args.user)
