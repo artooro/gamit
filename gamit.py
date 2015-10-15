@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 from oauth2client.client import SignedJwtAssertionCredentials
+from oauth2client.keyring_storage import Storage
 import os
 import json
 import argparse
@@ -41,15 +42,19 @@ class Gamit:
             sub_user = user_email
 
         if args.oauth is not None:
-            flow = client.flow_from_clientsecrets(
-                KEY_FILE_NATIVE,
-                scope=SCOPE,
-                redirect_uri='urn:ietf:wg:oauth:2.0:oob'
-            )
-            auth_uri = flow.step1_get_authorize_url()
-            print "Open your browser and go to:\n%s" % auth_uri
-            auth_code = raw_input('Enter code: ')
-            credentials = flow.step2_exchange(auth_code)
+            storage = Storage('Gamit', self.user_email)
+            credentials = storage.get()
+            if not credentials:
+                flow = client.flow_from_clientsecrets(
+                    KEY_FILE_NATIVE,
+                    scope=SCOPE,
+                    redirect_uri='urn:ietf:wg:oauth:2.0:oob'
+                )
+                auth_uri = flow.step1_get_authorize_url()
+                print "Open your browser and go to:\n%s" % auth_uri
+                auth_code = raw_input('Enter code: ')
+                credentials = flow.step2_exchange(auth_code)
+                storage.put(credentials)
         else:
             credentials = SignedJwtAssertionCredentials(oauth_key['client_email'], oauth_key['private_key'], scope=SCOPE,
                                                     user_agent="Gamit %s" % _version, sub=sub_user)
