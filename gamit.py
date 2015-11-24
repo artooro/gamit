@@ -96,6 +96,109 @@ class Gamit:
         print "Client Name: %s" % self.oauth_key['client_id']
         print "Scopes: %s" % ','.join(SCOPE)
 
+    def reset_permissions(self):
+        if args.src is None:
+            print "You must provide the parent ID of a folder to start with"
+            return None
+
+        service = discovery.build('drive', 'v2', http=self.http_auth)
+
+        try:
+            parent = service.files().get(fileId=args.src).execute()
+        except googleapiclient.errors.HttpError, error:
+            print "Was not able to fetch parent ID, %s" % error
+            return None
+
+        def walk_folder(folder_id):
+            page_token = None
+            while True:
+                try:
+                    param = {}
+                    if page_token:
+                        param['pageToken'] = page_token
+                    children = service.children().list(
+                        folderId=folder_id, **param).execute()
+                except googleapiclient.errors.HttpError, error:
+                    print "An error occurred, %s" % error
+                    break
+
+                for child in children.get('items', []):
+                    print 'File ID: %s' % child['id']
+
+                    # Reset permissions on that ID
+                    while True:
+                        try:
+                            perm_list = service.permissions().list(fileId=child['id']).execute()
+                            break
+                        except googleapiclient.errors.HttpError, error:
+                            print "Error when getting permission list, %s" % error
+                            try:
+                                details = json.loads(error.content)['error']
+                                if details.get('code') in (404):
+                                    for err in details.get('errors', []):
+                                        print "Error: %s Reason: %s" % (err['message'], err['reason'])
+                                    break
+                                else:
+                                    print error.content
+                            except:
+                                print error
+                            print "Re-trying request in 5 seconds"
+                            time.sleep(5)
+
+                    for perm in perm_list.get('items', []):
+                        if perm['role'] != 'owner':
+                            perm_name = 'N/A'
+                            if perm.get('name'):
+                                perm_name = perm['name']
+                            elif perm.get('emailAddress'):
+                                perm_name = perm['emailAddress']
+                            print "Removing Permissions for %s" % perm_name
+                            while True:
+                                try:
+                                    service.permissions().delete(fileId=child['id'], permissionId=perm['id']).execute()
+                                    break
+                                except googleapiclient.errors.HttpError, error:
+                                    print "Error when deleting permission, %s" % error
+                                    print perm
+                                    try:
+                                        details = json.loads(error.content)['error']
+                                        if details.get('code') in (403, 404):
+                                            for err in details.get('errors', []):
+                                                print "Error: %s Reason: %s" % (err['message'], err['reason'])
+                                            break
+                                        else:
+                                            print error.content
+                                    except:
+                                        print error
+                                    print "Re-trying request in 5 seconds"
+                                    time.sleep(5)
+                    while True:
+                        try:
+                            file_info = service.files().get(fileId=child['id'], fields='mimeType').execute()
+                            break
+                        except googleapiclient.errors.HttpError, error:
+                            print "Error when getting file info, %s" % error
+                            try:
+                                details = json.loads(error.content)['error']
+                                if details.get('code') in (404):
+                                    for err in details.get('errors', []):
+                                        print "Error: %s Reason: %s" % (err['message'], err['reason'])
+                                    break
+                                else:
+                                    print error.content
+                            except:
+                                print error
+                            print "Re-trying request in 5 seconds"
+                            time.sleep(5)
+
+                    if file_info['mimeType'] == 'application/vnd.google-apps.folder':
+                        walk_folder(child['id'])
+                page_token = children.get('nextPageToken')
+                if not page_token:
+                    break
+
+        walk_folder(parent['id'])
+
     def download_groups(self):
         service = discovery.build('admin', 'directory_v1', http=self.http_auth)
         domain = self.user_email.split('@')[1]
@@ -790,7 +893,8 @@ if __name__ == "__main__":
                                                                                     'mail_export_to_files',
                                                                                     'download_drive', 'restore_email',
                                                                                     'download_groups', 'restore_groups',
-                                                                                    'access_info', 'download_prev'])
+                                                                                    'access_info', 'download_prev',
+                                                                                    'reset_permissions'])
     parser.add_argument('-u', '--user', help="Email address of user", required=True)
     parser.add_argument('-b', '--base', help='Path of base folder to store gamitdata')
     parser.add_argument('-a', '--admin', help='Domain administrator user')
