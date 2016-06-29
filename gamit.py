@@ -1,15 +1,14 @@
 #!/usr/bin/env python
-from oauth2client.client import SignedJwtAssertionCredentials
-from oauth2client.keyring_storage import Storage
+from oauth2client.service_account import ServiceAccountCredentials
+from oauth2client.contrib.keyring_storage import Storage
 import os
 import json
 import argparse
-from httplib2 import Http
-from googleapiclient import discovery
+import httplib2
+from apiclient import discovery
 from oauth2client import client
-from googleapiclient.http import BatchHttpRequest
-import googleapiclient
-import googleapiclient.errors
+from apiclient.http import BatchHttpRequest
+import apiclient
 import gdata
 import gdata.apps.emailsettings.client
 import gdata.gauth
@@ -34,7 +33,9 @@ _version = '1'
 class Gamit:
     def __init__(self, user_email):
         self.user_email = user_email
-        oauth_key = json.load(file(KEY_FILE, 'r'))
+        f = file(KEY_FILE, 'r')
+        oauth_key = json.load(f)
+        f.close()
         self.oauth_key = oauth_key
         if args.admin is not None:
             sub_user = args.admin
@@ -44,7 +45,7 @@ class Gamit:
         if args.oauth is not None:
             storage = Storage('Gamit', self.user_email)
             credentials = storage.get()
-            if not credentials:
+            if not credentials or credentials.invalid:
                 flow = client.flow_from_clientsecrets(
                     KEY_FILE_NATIVE,
                     scope=SCOPE,
@@ -56,9 +57,10 @@ class Gamit:
                 credentials = flow.step2_exchange(auth_code)
                 storage.put(credentials)
         else:
-            credentials = SignedJwtAssertionCredentials(oauth_key['client_email'], oauth_key['private_key'], scope=SCOPE,
-                                                    user_agent="Gamit %s" % _version, sub=sub_user)
-        self.http_auth = credentials.authorize(Http())
+            credentials = ServiceAccountCredentials.from_json_keyfile_name(KEY_FILE, SCOPE)
+            credentials = credentials.create_delegated(sub_user)
+
+        self.http_auth = credentials.authorize(httplib2.Http())
         self.credentials = credentials
 
         # Check if storage folder exists
@@ -96,6 +98,109 @@ class Gamit:
         print "Client Name: %s" % self.oauth_key['client_id']
         print "Scopes: %s" % ','.join(SCOPE)
 
+    def fix_inbox(self):
+        service = discovery.build('gmail', 'v1', http=self.http_auth)
+
+        # Get list of labels
+        all_labels = []
+        reverse_map = {}
+        duplicate = []
+        labels_resp = service.users().labels().list(userId=self.user_email).execute()
+        for label in labels_resp['labels']:
+            print label['name']
+            reverse_map[label['name']] = label
+            if label['name'] in all_labels:
+                duplicate.append(label['name'])
+
+            all_labels.append(label['name'])
+
+        print "\n\n### DUPLICATE LABELS ###"
+
+        for label in all_labels:
+            if '/' in label:
+                parts = label.split('/')
+                del parts[0]
+                new_label = '/'.join(parts)
+                if new_label in all_labels:
+                    duplicate.append(label)
+                    duplicate.append(new_label)
+
+        if len(duplicate) < 1:
+            print "No duplicates found"
+        else:
+            print "### FOUND %s PROBLEMATIC LABELS ###" % len(duplicate)
+
+            prev_label = None
+            for duplicate_label in duplicate:
+                print duplicate_label
+
+                # Find out how many emails this label has
+                label_resp = service.users().labels().get(id=reverse_map[duplicate_label]['id'], userId=self.user_email).execute()
+                print "# Contains %s emails" % label_resp['messagesTotal']
+                if label_resp['messagesTotal'] == 0:
+                    if args.quiet is None:
+                        answer = raw_input('Want to delete this empty label? [Yes] ')
+                    else:
+                        answer = 'yes'
+                    if answer.lower() in ('yes', ''):
+                        print "### DELETING LABEL %s" % reverse_map[duplicate_label]['id']
+                        service.users().labels().delete(id=reverse_map[duplicate_label]['id'], userId=self.user_email).execute()
+                    else:
+                        print ".. skipping..."
+                else:
+                    # Merge label
+                    if args.quiet is None:
+                        answer = raw_input('Which label would you like to merge this to? [skip,prev,auto] ')
+                    else:
+                        answer = 'a'
+                    if answer != '':
+                        if answer in ('auto', 'a'):
+                            found_match = None
+                            for alabel in all_labels:
+                                parts = alabel.split('/')
+                                del parts[0]
+                                new_alabel = '/'.join(parts)
+                                if new_alabel == duplicate_label:
+                                    print "Found match label: %s" % alabel
+                                    found_match = alabel
+                                    break
+                            if found_match is not None:
+                                answer = found_match
+                        if answer in ('prev', 'p'):
+                            answer = prev_label
+                        if answer not in all_labels:
+                            print "Was not able to find a label with that name, skipping...."
+                        else:
+                            to_label_id = reverse_map[answer]['id']
+                            from_label_id = reverse_map[duplicate_label]['id']
+
+                            from_threads = []
+                            resp = service.users().threads().list(userId=self.user_email, labelIds=from_label_id).execute()
+                            if 'threads' in resp:
+                                from_threads.extend(resp['threads'])
+
+                            while 'nextPageToken' in resp:
+                                page_token = resp['nextPageToken']
+                                resp = service.users().threads().list(userId=self.user_email, labelIds=from_label_id, pageToken=page_token).execute()
+                                from_threads.extend(resp['threads'])
+
+                            for thread in from_threads:
+                                print "Merging %s into %s" % (thread['id'], answer)
+                                thread_resp = service.users().threads().modify(userId=self.user_email, id=thread['id'],
+                                                                               body={
+                                                                                   'addLabelIds': [to_label_id],
+                                                                                   'removeLabelIds': [from_label_id]
+                                                                               }
+                                                                               ).execute()
+                                print "Updated labels: %s" % ','.join(thread_resp['messages'][0]['labelIds'])
+                            print "Deleting label %s" % duplicate_label
+                            service.users().labels().delete(id=reverse_map[duplicate_label]['id'],
+                                                            userId=self.user_email).execute()
+
+                prev_label = duplicate_label
+
+        print "### TOTAL LABELS: %s ###" % len(all_labels)
+
     def reset_permissions(self):
         if args.src is None:
             print "You must provide the parent ID of a folder to start with"
@@ -105,7 +210,7 @@ class Gamit:
 
         try:
             parent = service.files().get(fileId=args.src).execute()
-        except googleapiclient.errors.HttpError, error:
+        except apiclient.errors.HttpError, error:
             print "Was not able to fetch parent ID, %s" % error
             return None
 
@@ -118,7 +223,7 @@ class Gamit:
                         param['pageToken'] = page_token
                     children = service.children().list(
                         folderId=folder_id, **param).execute()
-                except googleapiclient.errors.HttpError, error:
+                except apiclient.errors.HttpError, error:
                     print "An error occurred, %s" % error
                     break
 
@@ -130,7 +235,7 @@ class Gamit:
                         try:
                             perm_list = service.permissions().list(fileId=child['id']).execute()
                             break
-                        except googleapiclient.errors.HttpError, error:
+                        except apiclient.errors.HttpError, error:
                             print "Error when getting permission list, %s" % error
                             try:
                                 details = json.loads(error.content)['error']
@@ -157,7 +262,7 @@ class Gamit:
                                 try:
                                     service.permissions().delete(fileId=child['id'], permissionId=perm['id']).execute()
                                     break
-                                except googleapiclient.errors.HttpError, error:
+                                except apiclient.errors.HttpError, error:
                                     print "Error when deleting permission, %s" % error
                                     print perm
                                     try:
@@ -176,7 +281,7 @@ class Gamit:
                         try:
                             file_info = service.files().get(fileId=child['id'], fields='mimeType').execute()
                             break
-                        except googleapiclient.errors.HttpError, error:
+                        except apiclient.errors.HttpError, error:
                             print "Error when getting file info, %s" % error
                             try:
                                 details = json.loads(error.content)['error']
@@ -265,7 +370,7 @@ class Gamit:
             }
             try:
                 new_group = service.groups().insert(body=group_obj).execute()
-            except googleapiclient.errors.HttpError, e:
+            except apiclient.errors.HttpError, e:
                 try:
                     data = json.loads(e.content)
                 except:
@@ -287,7 +392,7 @@ class Gamit:
                 print "Adding member %s" % member['email']
                 try:
                     service.members().insert(groupKey=primary_email, body=member_obj).execute()
-                except googleapiclient.errors.HttpError, e:
+                except apiclient.errors.HttpError, e:
                     try:
                         data = json.loads(e.content)
                     except:
@@ -309,7 +414,7 @@ class Gamit:
                 print "Adding alias to group: %s" % alias_email
                 try:
                     service.groups().aliases().insert(groupKey=primary_email, body={'alias': alias_email}).execute()
-                except googleapiclient.errors.HttpError, e:
+                except apiclient.errors.HttpError, e:
                     try:
                         data = json.loads(e.content)
                     except:
@@ -343,7 +448,7 @@ class Gamit:
                 page_token = files.get('nextPageToken')
                 if not page_token:
                     break
-            except googleapiclient.errors.HttpError, e:
+            except apiclient.errors.HttpError, e:
                 print "There was an error: %s" % e
                 time.sleep(5)
 
@@ -456,7 +561,7 @@ class Gamit:
                                 print "Unknown error: %s" % resp
                                 print "Sleeping for 1 second before trying again"
                                 time.sleep(1)
-                    except googleapiclient.errors.HttpError, e:
+                    except apiclient.errors.HttpError, e:
                         print "Error occured: %s" % e.content
                         print "Going to re-try download in 1 second"
                         time.sleep(1)
@@ -480,7 +585,7 @@ class Gamit:
                 page_token = files.get('nextPageToken')
                 if not page_token:
                     break
-            except googleapiclient.errors.HttpError, e:
+            except apiclient.errors.HttpError, e:
                 print "There was an error: %s" % e
                 time.sleep(5)
 
@@ -599,7 +704,7 @@ class Gamit:
                             print "Unknown error: %s" % resp
                             print "Sleeping for 1 second before trying again"
                             time.sleep(1)
-                except googleapiclient.errors.HttpError, e:
+                except apiclient.errors.HttpError, e:
                     print "Error occured: %s" % e.content
                     print "Going to re-try download in 1 second"
                     time.sleep(1)
@@ -721,7 +826,7 @@ Body:
             print "Creating label with name: %s" % label['name']
             try:
                 service.users().labels().create(userId=self.user_email, body=label_obj).execute()
-            except googleapiclient.errors.HttpError, e:
+            except apiclient.errors.HttpError, e:
                 print e
 
         # Map old label IDs to their new label IDs
@@ -783,7 +888,7 @@ Body:
                 )
 
                 try:
-                    googleapiclient.http.HttpRequest(http=self.http_auth, postproc=http_callback,
+                    apiclient.http.HttpRequest(http=self.http_auth, postproc=http_callback,
                                            uri="https://www.googleapis.com/upload/gmail/v1/users/%s/messages/import?uploadType=%s" % (
                                                self.user_email,
                                                'multipart'
@@ -795,7 +900,7 @@ Body:
                     sf.write("\n")
                     sf.close()
                     break
-                except googleapiclient.http.HttpError, e:
+                except apiclient.http.HttpError, e:
                     try:
                         error = json.loads(e.content)['error']
                         if error.get('code') == 400:
@@ -894,7 +999,7 @@ if __name__ == "__main__":
                                                                                     'download_drive', 'restore_email',
                                                                                     'download_groups', 'restore_groups',
                                                                                     'access_info', 'download_prev',
-                                                                                    'reset_permissions'])
+                                                                                    'reset_permissions', 'fix_inbox'])
     parser.add_argument('-u', '--user', help="Email address of user", required=True)
     parser.add_argument('-b', '--base', help='Path of base folder to store gamitdata')
     parser.add_argument('-a', '--admin', help='Domain administrator user')
@@ -903,6 +1008,7 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--src', help='Source email address or path to file to restore from')
     parser.add_argument('--oauth', help='Authenticate as a user vs. using a service account')
     parser.add_argument('--date', help='Date in format YYYY-MM-DD')
+    parser.add_argument('-q', '--quiet', help="Do not ask the user for confirmation.")
     args = parser.parse_args()
 
     gamit = Gamit(args.user)
