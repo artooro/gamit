@@ -984,6 +984,203 @@ Body:
 
         print "Ended download at %s" % datetime.datetime.now().isoformat()
 
+    def list_folders_details(self):
+        service = discovery.build('drive', 'v3', http=self.http_auth)
+        if args.name is None:
+            print "You must provide a name to limit the list to."
+            return None
+
+        resp = service.files().list(q="name contains '%s' and mimeType = 'application/vnd.google-apps.folder'" % args.name).execute()
+        data = {}
+        for dfile in resp['files']:
+            data[dfile['name']] = {
+                'file_info': dfile
+            }
+            # Get permissions of each folder
+            #print "Listing permissions for %s" % dfile['id']
+            presp = service.permissions().list(fileId=dfile['id'], fields='permissions/emailAddress,permissions/role,permissions/id').execute()
+            data[dfile['name']]['permissions'] = presp['permissions']
+
+        print json.dumps(data)
+
+    def create_folder(self):
+        if args.name is None:
+            print "You must provide a name of the folder to create."
+            return None
+
+        service = discovery.build('drive', 'v3', http=self.http_auth)
+        resp = service.files().create(body={'mimeType': 'application/vnd.google-apps.folder', 'name': args.name}).execute()
+        print json.dumps(resp)
+
+    def remove_file_permissions(self):
+        if args.name is None:
+            print "You must provide a name value of the file to change"
+            return None
+        if args.src is None:
+            print "Specify the permission ID to remove in src"
+            return None
+
+        service = discovery.build('drive', 'v3', http=self.http_auth)
+        resp = service.permissions().delete(fileId=args.name, permissionId=args.src).execute()
+        print resp
+
+    def share_file(self):
+        if args.name is None:
+            print "You must provide an email address of user to share to in name arg"
+            return None
+        if args.src is None:
+            print "Identify the file ID to share in src"
+            return None
+
+        service = discovery.build('drive', 'v3', http=self.http_auth)
+        resp = service.permissions().create(fileId=args.src, emailMessage="This is a system managed shared folder", sendNotificationEmail=True, body={
+            'role': 'writer',
+            'type': 'user',
+            'emailAddress': args.name
+        }).execute()
+        print resp
+
+    def exit_user(self):
+        """
+        Take the following steps for a user
+        1. Download all email and save it to a folder on Drive
+        2. Forward user's email address to another address
+        3. Download calendar and save to Drive
+        4. Download contacts and save to Drive
+        5. Transfer ownership of users's Drive to another user
+        """
+
+        print "Starting email download at %s" % datetime.datetime.now().isoformat()
+        service = discovery.build('gmail', 'v1', http=self.http_auth)
+
+        # Get total number of messages in mailbox
+        response = None
+        while True:
+            try:
+                print "Getting user profile of %s" % self.user_email
+                response = service.users().getProfile(userId=self.user_email).execute()
+                break
+            except:
+                print "Re-trying in 2 seconds"
+                time.sleep(2)
+
+        total_messages = response['messagesTotal']
+        current_count = 0
+
+        # Save labels
+        labels_resp = None
+        while True:
+            try:
+                print "Getting list of user's email labels"
+                labels_resp = service.users().labels().list(userId=self.user_email).execute()
+                break
+            except:
+                print "Re-trying in 2 seconds"
+                time.sleep(2)
+
+        def copy_message(request_id, response, exception):
+            if exception is not None:
+                print "There was an exception"
+                pass
+            else:
+                print "\nSaving message %s" % response['id']
+
+                internal_date = datetime.datetime.fromtimestamp((float(response['internalDate'])) / 1000).isoformat()
+                subject = 'No subject'
+                for header in response['payload']['headers']:
+                    if header['name'].lower() == 'subject':
+                        subject = header['value']
+
+                print "Subject: %s" % subject
+
+                folder_name = "%s - %s" % (internal_date, subject)
+                print "Saving email to folder %s" % folder_name
+
+                def save_to_drive(type, name, data):
+                    if name == '':
+                        name = 'NoName'
+
+                    print "Saving %s to %s" % (name, folder_name)
+
+                def walk_the_part(parts, message_id):
+                    for part in parts:
+                        if 'attachmentId' in part['body']:
+                            print "Need to download attachment part!"
+                            data_type = part['mimeType']
+                            data_name = part['filename']
+                            part = download_part(part['body']['attachmentId'], message_id)
+                            if part['size'] > 0:
+                                data = base64.urlsafe_b64decode(part['data'].encode('ASCII'))
+                                save_to_drive(data_type, data_name, data)
+                        else:
+                            if part['body']['size'] > 0:
+                                data = base64.urlsafe_b64decode(part['body']['data'].encode('ASCII'))
+                                data_type = part['mimeType']
+                                data_name = part['filename']
+                                print "Saving msg part of type %s with name %s" % (data_type, data_name)
+                            else:
+                                print "Part has no data"
+                            if 'parts' in parts:
+                                walk_the_part(parts['parts'], message_id)
+
+                if response['payload']['body']['size'] > 0:
+                    if 'attachmentId' in response['payload']['body']:
+                        print "Need to download attachment!"
+                        part = download_part(response['payload']['body']['attachmentId'], response['id'])
+                        if part['size'] > 0:
+                            data = base64.urlsafe_b64decode(part['data'].encode('ASCII'))
+                            data_type = part['data']['mimeType']
+                            data_name = part['data']['filename']
+                            print "Saving msg part of type %s with name %s" % (data_type, data_name)
+                    else:
+                        data = base64.urlsafe_b64decode(response['payload']['body']['data'].encode('ASCII'))
+                        data_type = response['payload']['mimeType']
+                        data_name = response['payload']['filename']
+                        print "Saving msg part of type %s with name %s" % (data_type, data_name)
+                elif 'parts' in response['payload']:
+                    walk_the_part(response['payload']['parts'], response['id'])
+                else:
+                    print "Message has no payload body or message parts"
+
+        def download_part(part_id, message_id):
+            part = service.users().messages().attachments().get(userId=self.user_email, id=part_id,
+                                                                messageId=message_id).execute()
+            return part
+
+        def download_messages(messages):
+            batch = BatchHttpRequest()
+            for message in messages:
+                batch.add(service.users().messages().get(userId=self.user_email, id=message['id'], format='full'),
+                          callback=copy_message)
+            batch.execute(http=self.http_auth)
+
+        page_token = None
+        while page_token is not False:
+            # Try listing messages
+            #try:
+                if page_token is None:
+                    response = service.users().messages().list(userId=self.user_email).execute()
+                else:
+                    response = service.users().messages().list(userId=self.user_email, pageToken=page_token).execute()
+
+                # Try downloading messages
+                #try:
+                download_messages(response['messages'])
+                current_count = current_count + len(response['messages'])
+                print "Downloading %s/%s messages" % (current_count, total_messages)
+
+                if 'nextPageToken' in response:
+                    page_token = response['nextPageToken']
+                else:
+                    page_token = False
+                #except:
+                #    print "Problem downloading batch of messages, will re-try in 2 seconds"
+                #    time.sleep(2)
+            #except:
+            #    print "Problem with listing messages for download. Will re-try in 2 seconds"
+            #    time.sleep(2)
+
+        print "Ended job at %s" % datetime.datetime.now().isoformat()
 
 def safe_filename(filename):
     value = unicodedata.normalize('NFKD', filename).encode('ascii', 'ignore')
@@ -999,13 +1196,18 @@ if __name__ == "__main__":
                                                                                     'download_drive', 'restore_email',
                                                                                     'download_groups', 'restore_groups',
                                                                                     'access_info', 'download_prev',
-                                                                                    'reset_permissions', 'fix_inbox'])
+                                                                                    'reset_permissions', 'fix_inbox',
+                                                                                    'exit_user', 'list_folders_details',
+                                                                                    'create_folder',
+                                                                                    'remove_file_permissions',
+                                                                                    'share_file'])
     parser.add_argument('-u', '--user', help="Email address of user", required=True)
     parser.add_argument('-b', '--base', help='Path of base folder to store gamitdata')
     parser.add_argument('-a', '--admin', help='Domain administrator user')
     parser.add_argument('-d', '--domain', help='Domain name')
     parser.add_argument('-f', '--forward', help='Email address to forward to')
     parser.add_argument('-s', '--src', help='Source email address or path to file to restore from')
+    parser.add_argument('-n', '--name', help='Name or pattern')
     parser.add_argument('--oauth', help='Authenticate as a user vs. using a service account')
     parser.add_argument('--date', help='Date in format YYYY-MM-DD')
     parser.add_argument('-q', '--quiet', help="Do not ask the user for confirmation.")
