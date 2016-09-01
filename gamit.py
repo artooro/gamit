@@ -993,6 +993,7 @@ Body:
         resp = service.files().list(q="name contains '%s' and mimeType = 'application/vnd.google-apps.folder'" % args.name).execute()
         data = {}
         for dfile in resp['files']:
+            time.sleep(2)
             data[dfile['name']] = {
                 'file_info': dfile
             }
